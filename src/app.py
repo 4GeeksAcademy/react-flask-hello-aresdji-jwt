@@ -6,18 +6,22 @@ from flask import Flask, request, jsonify, url_for, send_from_directory
 from flask_migrate import Migrate
 from flask_swagger import swagger
 from api.utils import APIException, generate_sitemap
-from api.models import db
+from api.models import db, User
 from api.routes import api
 from api.admin import setup_admin
 from api.commands import setup_commands
 
-# from models import Person
+from flask_jwt_extended import jwt_required, create_access_token, JWTManager, get_jwt_identity
+from flask_cors import CORS
 
 ENV = "development" if os.getenv("FLASK_DEBUG") == "1" else "production"
 static_file_dir = os.path.join(os.path.dirname(
     os.path.realpath(__file__)), '../public/')
 app = Flask(__name__)
 app.url_map.strict_slashes = False
+
+jwt = JWTManager(app)
+CORS(app)
 
 # database condiguration
 db_url = os.getenv("DATABASE_URL")
@@ -67,6 +71,46 @@ def serve_any_other_file(path):
     response.cache_control.max_age = 0  # avoid cache memory
     return response
 
+@app.route('/users', methods=['GET'])
+def get_users():
+    return [user.serialize() for user in User.query.all()], 200
+
+@app.route('/users', methods=["POST"]) 
+def create_user():
+    data = request.json
+    username = data.get('username')
+    email = data.get('email')
+    password = data.get('password')
+
+    if not username or not email or not password: return jsonify({'Error': 'There are missing fields.'}), 400
+
+    existing_user_email = User.query.filter_by(email=email).first()
+    if existing_user_email: return jsonify({'Error': 'Email is already in use.'}), 400
+
+    new_user = User(username=username, email=email, password=password)
+
+    db.session.add(new_user)
+    db.session.commit()
+
+    return jsonify(new_user.serialize()), 201
+
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.json
+    email = data.get('email')
+    password = data.get('password')
+
+    user = User.query.filter_by(email=email).first()
+    if not user or user.password != password: return jsonify({ 'Error': 'Invalid email or password.' }), 401
+
+    access_token = create_access_token(identity=email)
+    return jsonify(access_token=access_token), 200
+
+@app.route("/validate-token", methods=["GET"])
+@jwt_required()
+def validate():
+    current_user = get_jwt_identity()
+    return jsonify(valid=bool(current_user)), 200
 
 # this only runs if `$ python src/main.py` is executed
 if __name__ == '__main__':
